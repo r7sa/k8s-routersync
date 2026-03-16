@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- control_v1_routersync.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

@@ -1,22 +1,33 @@
-# k8s-netcraze-schedule
-// TODO(user): Add simple overview of use/purpose
+# k8s-routersync
+
+Automates changing the number of replicas according to the schedule in the NetCraze router.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The operator is designed to monitor the current schedule status in the router and change the number of replicas for specified deployments.
+Router access parameters are defined by the operator specification.
+The schedule name and replication parameters are specified in the deployment labels:
+
+- `routersync.r7sa.github.io/auto-scale-enabled` - must be `true` or `false`,
+- `routersync.r7sa.github.io/auto-scale-schedule` - defines schedule name,
+- `routersync.r7sa.github.io/auto-scale-on-replicas` - defines number of replicas when schedule is on,
+- `routersync.r7sa.github.io/auto-scale-off-replicas` - defines number of replicas when schedule is off.
 
 ## Getting Started
 
 ### Prerequisites
+
 - go version v1.24.6+
 - docker version 17.03+.
 - kubectl version v1.11.3+.
 - Access to a Kubernetes v1.11.3+ cluster.
 
 ### To Deploy on the cluster
+
 **Build and push your image to the location specified by `IMG`:**
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/k8s-netcraze-schedule:tag
+make docker-build docker-push IMG=<some-registry>/k8s-routersync:tag
 ```
 
 **NOTE:** This image ought to be published in the personal registry you specified.
@@ -32,13 +43,22 @@ make install
 **Deploy the Manager to the cluster with the image specified by `IMG`:**
 
 ```sh
-make deploy IMG=<some-registry>/k8s-netcraze-schedule:tag
+make deploy IMG=<some-registry>/k8s-routersync:tag
 ```
 
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
 privileges or be logged in as admin.
 
-**Create instances of your solution**
+**Add secret with username and password for router:**
+
+```sh
+kubectl create secret generic router-auth \
+  --from-literal=username=admin \
+  --from-literal=password=my-super-safe-pass
+```
+
+**Create instances of your solution:**
+
 You can apply the samples (examples) from the config/sample:
 
 ```sh
@@ -48,6 +68,7 @@ kubectl apply -k config/samples/
 >**NOTE**: Ensure that the samples has default values to test it out.
 
 ### To Uninstall
+
 **Delete the instances (CRs) from the cluster:**
 
 ```sh
@@ -75,7 +96,7 @@ Following the options to release and provide this solution to the users.
 1. Build the installer for the image built and published in the registry:
 
 ```sh
-make build-installer IMG=<some-registry>/k8s-netcraze-schedule:tag
+make build-installer IMG=<some-registry>/k8s-routersync:tag
 ```
 
 **NOTE:** The makefile target mentioned above generates an 'install.yaml'
@@ -83,13 +104,13 @@ file in the dist directory. This file contains all the resources built
 with Kustomize, which are necessary to install this project without its
 dependencies.
 
-2. Using the installer
+1. Using the installer
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
+Users can just run `kubectl apply -f <URL for YAML BUNDLE>` to install
 the project, i.e.:
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/k8s-netcraze-schedule/<tag or branch>/dist/install.yaml
+kubectl apply -f https://raw.githubusercontent.com/<org>/k8s-routersync/<tag or branch>/dist/install.yaml
 ```
 
 ### By providing a Helm Chart
@@ -100,7 +121,7 @@ kubectl apply -f https://raw.githubusercontent.com/<org>/k8s-netcraze-schedule/<
 kubebuilder edit --plugins=helm/v2-alpha
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
+1. See that a chart was generated under 'dist/chart', and users
 can obtain this solution from there.
 
 **NOTE:** If you change the project, you need to update the Helm Chart
@@ -111,7 +132,6 @@ previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml
 is manually re-applied afterwards.
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
@@ -119,6 +139,7 @@ More information can be found via the [Kubebuilder Documentation](https://book.k
 
 ## License
 
+```text
 Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -132,4 +153,4 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
+```

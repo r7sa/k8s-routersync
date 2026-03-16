@@ -1,0 +1,11 @@
+apiVersion: control.routersync.r7sa.github.io/v1
+kind: RouterSync
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-routersync
+    app.kubernetes.io/managed-by: kustomize
+  name: routersync-sample
+spec:
+  routerAddress: 127.0.0.1
+  routerPort: 80
+  secretRef: netcraze-auth  # secret with `username` and `password` fields
