@@ -127,7 +127,7 @@ func (r *RouterSyncReconciler) collectSchedules(
 }
 
 func (r *RouterSyncReconciler) scaleDeployments(
-	ctx context.Context, req ctrl.Request, deployments *appsv1.DeploymentList, scheduleActive map[string]bool,
+	ctx context.Context, deployments *appsv1.DeploymentList, scheduleActive map[string]bool,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -203,7 +203,7 @@ func (r *RouterSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	nc, err := r.getOrCreateClient(RouterType(rs.Spec.RouterType), rs.Spec.RouterAddress, rs.Spec.RouterPort, string(user), string(pass))
+	nc, err := r.getOrCreateClient(RouterType(rs.Spec.RouterType), rs.Spec.RouterAddress, rs.Spec.RouterPort, user, pass)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -218,7 +218,7 @@ func (r *RouterSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	err = r.scaleDeployments(ctx, req, deployments, scheduleActive)
+	err = r.scaleDeployments(ctx, deployments, scheduleActive)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

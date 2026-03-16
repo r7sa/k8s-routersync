@@ -50,7 +50,7 @@ func (c *Client) login(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("login failed with status: %d", resp.StatusCode)
@@ -59,7 +59,7 @@ func (c *Client) login(ctx context.Context) error {
 	return nil
 }
 
-type rciRequest []map[string]interface{}
+type rciRequest []map[string]any
 
 type rciAction struct {
 	Type      string `json:"type"` // "start" or "stop"
@@ -82,7 +82,7 @@ func (c *Client) fetchScheduleNearestAction(ctx context.Context, name string) (r
 	// Create request body: [{"show":{"schedule":{"name":"schedule123"}}}]
 	body := rciRequest{
 		{
-			"show": map[string]interface{}{
+			"show": map[string]any{
 				"schedule": map[string]string{
 					"name": name,
 				},
@@ -97,7 +97,7 @@ func (c *Client) fetchScheduleNearestAction(ctx context.Context, name string) (r
 	if err != nil {
 		return rciAction{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return rciAction{}, ErrUnauthorized

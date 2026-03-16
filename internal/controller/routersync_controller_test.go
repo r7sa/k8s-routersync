@@ -39,10 +39,10 @@ func newMockServer(scheduleIsActive *bool) *httptest.Server {
 					w.Header().Set("Content-Type", "application/json")
 					if r.Method == "GET" {
 						// login challenge
-						w.Write([]byte(`{"challenge": "12345", "status": "ok"}`))
+						_, _ = w.Write([]byte(`{"challenge": "12345", "status": "ok"}`))
 					} else {
 						// login response
-						w.Write([]byte(`{"status": "ok"}`))
+						_, _ = w.Write([]byte(`{"status": "ok"}`))
 					}
 					return
 				}
@@ -52,12 +52,12 @@ func newMockServer(scheduleIsActive *bool) *httptest.Server {
 						http.Error(w, "Can't read body", http.StatusBadRequest)
 						return
 					}
-					defer r.Body.Close()
+					defer func() { _ = r.Body.Close() }()
 
 					m := reSchedule.FindStringSubmatch(string(body))
 					if len(m) <= 1 {
 						w.Header().Set("Content-Type", "application/json")
-						w.Write([]byte(`{"error":"schedule does not found"}`))
+						_, _ = w.Write([]byte(`{"error":"schedule does not found"}`))
 
 					} else {
 						w.Header().Set("Content-Type", "application/json")
@@ -65,12 +65,10 @@ func newMockServer(scheduleIsActive *bool) *httptest.Server {
 						if *scheduleIsActive {
 							lastType = "stop"
 						}
-						w.Write([]byte(
-							fmt.Sprintf(`[{"show":{"schedule":{"%s":{"action":[
+						_, _ = fmt.Fprintf(w, `[{"show":{"schedule":{"%s":{"action":[
 								{"type": "start","left": 586807,"dow": "Sun","time": "16:30"},
 								{"type": "%s","left": 5407,"next": true,"dow": "Sun","time": "23:00"}
-							]}}}}]`, m[1], lastType),
-						))
+							]}}}}]`, m[1], lastType)
 					}
 					return
 				}

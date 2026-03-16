@@ -165,7 +165,9 @@ func LoadImageToKindClusterWithName(name string) error {
 	if _, err := Run(saveCmd); err != nil {
 		return fmt.Errorf("failed to save image: %w", err)
 	}
-	defer os.Remove(tarFile)
+	defer func() {
+		_ = os.Remove(tarFile)
+	}()
 
 	// Load image using ctr without --all-platforms
 	loadCmd := exec.Command("docker", "exec", "-i", node, "ctr", "--namespace=k8s.io", "images", "import", "-")
@@ -173,7 +175,7 @@ func LoadImageToKindClusterWithName(name string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open tar file: %w", err)
 	}
-	defer loadCmd.Stdin.(*os.File).Close()
+	defer func() { _ = loadCmd.Stdin.(*os.File).Close() }()
 
 	if _, err := Run(loadCmd); err != nil {
 		return fmt.Errorf("failed to load image: %w", err)
