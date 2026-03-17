@@ -1,5 +1,8 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+GIT_TAG ?= $(shell git rev-parse --short HEAD || echo "latest")
+PROJECT_NAME ?= k8s-routersync
+REGISTRY ?= localhost:5050
+IMG ?= $(REGISTRY)/$(PROJECT_NAME):$(GIT_TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -27,6 +30,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+#    $(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./internal/controller;./api/..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

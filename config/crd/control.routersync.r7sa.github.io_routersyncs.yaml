@@ -40,8 +40,11 @@ spec:
             description: spec defines the desired state of RouterSync
             properties:
               routerAddress:
-                description: Router address in format "host:port"
+                description: Router address
                 type: string
+              routerPort:
+                description: Router TCP port
+                type: integer
               routerType:
                 description: Router type (e.g. netcraze, etc. - for future extensibility)
                 type: string
@@ -50,6 +53,7 @@ spec:
                 type: string
             required:
             - routerAddress
+            - routerPort
             - routerType
             - secretRef
             type: object

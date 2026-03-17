@@ -10,8 +10,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/go-logr/logr"
 	controlv1 "github.com/r7sa/k8s-routersync/api/v1"
@@ -26,17 +28,15 @@ const (
 
 const (
 	POLL_INTERVAL = 30 * time.Second
-
-	NETCRAZE_
 )
 
 type PoolKey struct {
 	RouterType RouterType
 	Address    string
-	Port       int
 }
 
 type ScheduleInfo interface {
+	FetchSchedules(ctx context.Context) error
 	IsScheduleActive(ctx context.Context, name string) (bool, error)
 }
 
@@ -71,17 +71,17 @@ func (r *RouterSyncReconciler) getUserPassFromSecret(ctx context.Context, namesp
 	return string(user), string(pass), nil
 }
 
-func (r *RouterSyncReconciler) getOrCreateClient(routerType RouterType, address string, port int, user, pass string) (ScheduleInfo, error) {
+func (r *RouterSyncReconciler) getOrCreateClient(routerType RouterType, address string, user, pass string) (ScheduleInfo, error) {
 	if r.RouterPool == nil {
 		r.RouterPool = make(map[PoolKey]ScheduleInfo)
 	}
 
-	key := PoolKey{Address: address, Port: port}
+	key := PoolKey{RouterType: routerType, Address: address}
 	nc := r.RouterPool[key]
 	if nc == nil {
 		switch routerType {
 		case "", RouterTypeNetCraze:
-			nc = netcraze.NewClient(address, port, user, pass)
+			nc = netcraze.NewClient(address, user, pass)
 		default:
 			return nil, fmt.Errorf("unsupported router type: %s", routerType)
 		}
@@ -90,22 +90,31 @@ func (r *RouterSyncReconciler) getOrCreateClient(routerType RouterType, address 
 	return nc, nil
 }
 
-func (r *RouterSyncReconciler) collectDeployments(ctx context.Context, req ctrl.Request) (*appsv1.DeploymentList, error) {
+func (r *RouterSyncReconciler) collectDeployments(ctx context.Context) (*appsv1.DeploymentList, error) {
 	deployments := &appsv1.DeploymentList{}
 	err := r.List(
 		ctx, deployments,
-		client.InNamespace(req.Namespace),
+		// client.InNamespace(req.Namespace),
 		client.MatchingLabels{"routersync.r7sa.github.io/auto-scale-enabled": "true"},
 	)
 	if err != nil {
 		return nil, err
 	}
+
+	log := logf.FromContext(ctx)
+	log.Info("Found deployments", "count", len(deployments.Items))
+
 	return deployments, nil
 }
 
 func (r *RouterSyncReconciler) collectSchedules(
 	ctx context.Context, deployments *appsv1.DeploymentList, nc ScheduleInfo,
 ) (map[string]bool, error) {
+	err := nc.FetchSchedules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	scheduleActive := map[string]bool{}
 	for _, dep := range deployments.Items {
 		scheduleName, ok := dep.Labels["routersync.r7sa.github.io/auto-scale-schedule"]
@@ -122,6 +131,9 @@ func (r *RouterSyncReconciler) collectSchedules(
 		}
 		scheduleActive[scheduleName] = isActive
 	}
+
+	log := logf.FromContext(ctx)
+	log.Info("Found schedules", "count", len(scheduleActive))
 
 	return scheduleActive, nil
 }
@@ -146,7 +158,7 @@ func (r *RouterSyncReconciler) scaleDeployments(
 				log.Error(err, "Can't update deployment", "name", dep.Name)
 				continue
 			}
-			log.Info("Synchronized", "deployment", dep.Name, "replicas", targetReplicas)
+			log.Info("Deployment replicas set", "deployment", dep.Name, "replicas", targetReplicas)
 		}
 	}
 	return errors.Join(errs...)
@@ -191,24 +203,30 @@ func (*RouterSyncReconciler) getTargetReplicas(
 
 // +kubebuilder:rbac:groups=control.routersync.r7sa.github.io,resources=routersyncs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=control.routersync.r7sa.github.io,resources=routersyncs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=control.routersync.r7sa.github.io,resources=routersyncs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+
 func (r *RouterSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("Starting reconciling", "name", req.Name)
+
 	var rs controlv1.RouterSync
 	if err := r.Get(ctx, req.NamespacedName, &rs); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{RequeueAfter: POLL_INTERVAL}, client.IgnoreNotFound(err)
 	}
 
 	user, pass, err := r.getUserPassFromSecret(ctx, rs.Namespace, rs.Spec.SecretRef)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	nc, err := r.getOrCreateClient(RouterType(rs.Spec.RouterType), rs.Spec.RouterAddress, rs.Spec.RouterPort, user, pass)
+	nc, err := r.getOrCreateClient(RouterType(rs.Spec.RouterType), rs.Spec.RouterAddress, user, pass)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	deployments, err := r.collectDeployments(ctx, req)
+	deployments, err := r.collectDeployments(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -228,13 +246,21 @@ func (r *RouterSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	log.Info("Done reconciling", "name", req.Name)
+
 	return ctrl.Result{RequeueAfter: POLL_INTERVAL}, nil
 }
 
 func (r *RouterSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// return ctrl.NewControllerManagedBy(mgr).
+	// 	For(&controlv1.RouterSync{}).
+	// 	Owns(&appsv1.Deployment{}).
+	// 	Named("routersync").
+	// 	Complete(r)
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&controlv1.RouterSync{}).
-		Owns(&appsv1.Deployment{}).
+		For(&controlv1.RouterSync{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Owns(&appsv1.Deployment{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("routersync").
 		Complete(r)
 }

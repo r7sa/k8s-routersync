@@ -2,12 +2,13 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
-	"net/http/httptest"
-	"regexp"
+	"strings"
+
+	"golang.org/x/crypto/ssh"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,61 +29,83 @@ const (
 	deploymentName = "test-app"
 )
 
-func newMockServer(scheduleIsActive *bool) *httptest.Server {
-	// [{"show":{"schedule":{"name":"schedule123"}}}]
-	reSchedule := regexp.MustCompile("{\"show\":{\"schedule\":{\"name\":\"(.*)\"}}}")
+var scheduleResponse = map[bool]string{
+	true: `schedule, name = WorkHours:
+  action, type = start, left = 1234:
+  action, type = stop, left = 123:
+schedule, name = OffHours:
+`,
+	false: `schedule, name = WorkHours:
+  action, type = stop, left = 1234:
+  action, type = start, left = 123:
+schedule, name = OffHours:
+`,
+}
 
-	return httptest.NewServer(
-		http.HandlerFunc(
-			func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/auth" {
-					w.Header().Set("Content-Type", "application/json")
-					if r.Method == "GET" {
-						// login challenge
-						_, _ = w.Write([]byte(`{"challenge": "12345", "status": "ok"}`))
-					} else {
-						// login response
-						_, _ = w.Write([]byte(`{"status": "ok"}`))
+func startMockSSH(responseKey *bool) (string, func()) {
+	config := &ssh.ServerConfig{
+		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if c.User() == "admin" && string(pass) == "pass" {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("password rejected")
+		},
+	}
+
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	hostKey, _ := ssh.NewSignerFromKey(key)
+	config.AddHostKey(hostKey)
+
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// SSH Handshake
+			sshConn, chans, reqs, _ := ssh.NewServerConn(conn, config)
+			go ssh.DiscardRequests(reqs)
+			go func(in <-chan ssh.NewChannel) {
+				for newChan := range in {
+					if newChan.ChannelType() != "session" {
+						_ = newChan.Reject(ssh.UnknownChannelType, "unknown channel type")
+						continue
 					}
-					return
-				}
-				if r.URL.Path == "/rci/" && r.Method == "POST" {
-					body, err := io.ReadAll(r.Body)
-					if err != nil {
-						http.Error(w, "Can't read body", http.StatusBadRequest)
-						return
-					}
-					defer func() { _ = r.Body.Close() }()
-
-					m := reSchedule.FindStringSubmatch(string(body))
-					if len(m) <= 1 {
-						w.Header().Set("Content-Type", "application/json")
-						_, _ = w.Write([]byte(`{"error":"schedule does not found"}`))
-
-					} else {
-						w.Header().Set("Content-Type", "application/json")
-						lastType := "start"
-						if *scheduleIsActive {
-							lastType = "stop"
+					channel, requests, _ := newChan.Accept()
+					go func(in <-chan *ssh.Request) {
+						for req := range in {
+							// Нам нужен тип запроса "exec" (это делает session.Run)
+							if req.Type == "exec" {
+								// Проверяем команду (первые 4 байта длины + сама команда)
+								cmd := string(req.Payload[4:])
+								if strings.Contains(cmd, "show schedule") {
+									response := scheduleResponse[*responseKey]
+									_, _ = channel.Write([]byte(response))
+									_ = req.Reply(true, nil)
+									// Важно: закрываем канал с кодом 0
+									_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+									_ = channel.Close()
+								}
+							}
 						}
-						_, _ = fmt.Fprintf(w, `[{"show":{"schedule":{"%s":{"action":[
-								{"type": "start","left": 586807,"dow": "Sun","time": "16:30"},
-								{"type": "%s","left": 5407,"next": true,"dow": "Sun","time": "23:00"}
-							]}}}}]`, m[1], lastType)
-					}
-					return
+					}(requests)
 				}
-				w.WriteHeader(http.StatusNotFound)
-			},
-		),
-	)
+			}(chans)
+			_ = sshConn
+		}
+	}()
+
+	return ln.Addr().String(), func() { _ = ln.Close() }
 }
 
 var _ = Describe("RouterSync Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 
-		var mockRouterServer *httptest.Server
+		var mockRouterAddress string
+		var mockRouterCloser func()
 
 		ctx := context.Background()
 
@@ -94,8 +117,7 @@ var _ = Describe("RouterSync Controller", func() {
 		scheduleIsActive := false
 
 		BeforeEach(func() {
-			mockRouterServer = newMockServer(&scheduleIsActive)
-			mockRouterAddress := mockRouterServer.Listener.Addr().(*net.TCPAddr)
+			mockRouterAddress, mockRouterCloser = startMockSSH(&scheduleIsActive)
 
 			By("creating the Secret first")
 			secret := &corev1.Secret{
@@ -144,8 +166,7 @@ var _ = Describe("RouterSync Controller", func() {
 						Namespace: "default",
 					},
 					Spec: controlv1.RouterSyncSpec{
-						RouterAddress: "127.0.0.1",
-						RouterPort:    mockRouterAddress.Port,
+						RouterAddress: mockRouterAddress,
 						SecretRef:     "netcraze-auth",
 					},
 				}
@@ -170,7 +191,7 @@ var _ = Describe("RouterSync Controller", func() {
 			_ = k8sClient.Delete(ctx, sec)
 
 			By("Stopping mock server")
-			mockRouterServer.Close()
+			mockRouterCloser()
 		})
 
 		DescribeTable("Check reconcile",

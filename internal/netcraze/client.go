@@ -3,144 +3,149 @@ package netcraze
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"net/http/cookiejar"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
-type Client struct {
-	Host     string
-	Port     int
-	Username string
-	Password string
-	HTTP     *http.Client
-	mu       sync.Mutex
+type ScheduleAction struct {
+	Type string
+	Left time.Duration
 }
 
-func NewClient(host string, port int, user, pass string) *Client {
-	jar, _ := cookiejar.New(nil)
+type Client struct {
+	Address   string
+	Username  string
+	Password  string
+	Schedules map[string][]ScheduleAction
+
+	mu sync.Mutex
+}
+
+func NewClient(address string, user, pass string) *Client {
 	return &Client{
-		Host:     host,
-		Port:     port,
-		Username: user,
-		Password: pass,
-		HTTP:     &http.Client{Jar: jar, Timeout: 10 * time.Second},
+		Address:   address,
+		Username:  user,
+		Password:  pass,
+		Schedules: make(map[string][]ScheduleAction),
 	}
 }
 
-func (c *Client) login(ctx context.Context) error {
-	passHash := sha256.Sum256([]byte(c.Password))
-	combined := fmt.Sprintf("%x", passHash)
-	finalHash := sha256.Sum256([]byte(combined))
+func parseScheduleLine(line string) map[string]string {
+	params := make(map[string]string)
 
-	loginData := fmt.Sprintf(`{"login":"%s","password":"%x"}`, c.Username, finalHash)
-	req, _ := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s:%d/auth", c.Host, c.Port),
-		strings.NewReader(loginData))
-	req.Header.Set("Content-Type", "application/json")
+	for part := range strings.SplitSeq(line, ",") {
+		part = strings.TrimSpace(part)
+		if paramKey, paramValue, found := strings.Cut(part, "="); found {
+			params[strings.TrimSpace(paramKey)] = strings.TrimSpace(paramValue)
+		} else {
+			params[""] = part
+		}
+	}
+	return params
+}
 
-	resp, err := c.HTTP.Do(req)
+func parseDuration(s string) time.Duration {
+	var d int
+	_, err := fmt.Sscanf(s, "%d", &d)
+	if err != nil {
+		return 0
+	}
+	return time.Duration(d) * time.Second
+}
+
+func (c *Client) FetchSchedules(ctx context.Context) error {
+	config := &ssh.ClientConfig{
+		User: c.Username,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(c.Password),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         5 * time.Second,
+	}
+
+	client, err := ssh.Dial("tcp", c.Address, config)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = client.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("login failed with status: %d", resp.StatusCode)
-	}
-
-	return nil
-}
-
-type rciRequest []map[string]any
-
-type rciAction struct {
-	Type      string `json:"type"` // "start" or "stop"
-	DayOfWeek string `json:"dow"`  // Sun, Mon, ..., Sat
-	Time      string `json:"time"` // "HH:MM"
-	Left      int    `json:"left"` // Seconds to event
-}
-
-type rciResponse []struct {
-	Show struct {
-		Schedule map[string]struct {
-			Action []rciAction `json:"action"`
-		} `json:"schedule"`
-	} `json:"show"`
-}
-
-func (c *Client) fetchScheduleNearestAction(ctx context.Context, name string) (rciAction, error) {
-	url := fmt.Sprintf("http://%s:%d/rci/", c.Host, c.Port)
-
-	// Create request body: [{"show":{"schedule":{"name":"schedule123"}}}]
-	body := rciRequest{
-		{
-			"show": map[string]any{
-				"schedule": map[string]string{
-					"name": name,
-				},
-			},
-		},
-	}
-	jsonData, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTP.Do(req)
+	session, err := client.NewSession()
 	if err != nil {
-		return rciAction{}, err
+		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = session.Close() }()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		return rciAction{}, ErrUnauthorized
-	}
+	var b bytes.Buffer
+	session.Stdout = &b
 
-	var rciResp rciResponse
-	if err := json.NewDecoder(resp.Body).Decode(&rciResp); err != nil {
-		return rciAction{}, err
+	if err := session.Run("show schedule"); err != nil {
+		return err
 	}
 
-	if len(rciResp) > 0 {
-		scheduleData, exists := rciResp[0].Show.Schedule[name]
-		if !exists || len(scheduleData.Action) == 0 {
-			return rciAction{}, fmt.Errorf("schedule %s not found or empty", name)
+	lines := strings.Split(b.String(), "\n")
+	schedules := make(map[string][]ScheduleAction)
+	curScheduleName := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		line = strings.TrimSuffix(line, "\r")
+		line, endsWithColon := strings.CutSuffix(line, ":")
+		if !endsWithColon || len(line) == 0 {
+			continue
 		}
 
-		slices.SortFunc(scheduleData.Action, func(a, b rciAction) int {
-			return a.Left - b.Left
-		})
-		firstAction := scheduleData.Action[0]
-		return firstAction, nil
+		lineParams := parseScheduleLine(line)
+		switch lineParams[""] {
+		case "schedule":
+			curScheduleName = lineParams["name"]
+			if curScheduleName == "" {
+				return fmt.Errorf("schedule name is empty in line: %s", line)
+			}
+			schedules[curScheduleName] = make([]ScheduleAction, 0)
+		case "action":
+			if curScheduleName == "" {
+				return fmt.Errorf("schedule name is empty in line: %s", line)
+			}
+			actionType := lineParams["type"]
+			actionLeft := lineParams["left"]
+			if actionType == "" || actionLeft == "" {
+				return fmt.Errorf("invalid action line: %s", line)
+			}
+			schedules[curScheduleName] = append(schedules[curScheduleName], ScheduleAction{
+				Type: actionType,
+				Left: parseDuration(actionLeft),
+			})
+		}
 	}
 
-	return rciAction{}, fmt.Errorf("empty response from router")
-}
+	for _, actions := range schedules {
+		if len(actions) > 1 {
+			slices.SortFunc(actions, func(a, b ScheduleAction) int { return int(a.Left.Seconds() - b.Left.Seconds()) })
+		}
+	}
 
-var ErrUnauthorized = errors.New("netcraze: unauthorized")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Schedules = schedules
 
-func isAuthError(err error) bool {
-	return errors.Is(err, ErrUnauthorized)
+	return nil
 }
 
 func (c *Client) IsScheduleActive(ctx context.Context, name string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	action, err := c.fetchScheduleNearestAction(ctx, name)
-	if err != nil && isAuthError(err) {
-		if err := c.login(ctx); err != nil {
-			return false, err
-		}
-		action, err = c.fetchScheduleNearestAction(ctx, name)
+	actions, ok := c.Schedules[name]
+	if !ok || len(actions) == 0 {
+		return false, fmt.Errorf("schedule %s not found", name)
+	}
+	if len(actions) < 1 {
+		return true, nil
 	}
 
-	return action.Type == "stop", err
+	return actions[0].Type == "stop", nil
 }

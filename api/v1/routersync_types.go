@@ -10,11 +10,8 @@ type RouterSyncSpec struct {
 	// Router type (e.g. netcraze, etc. - for future extensibility)
 	RouterType string `json:"routerType"`
 
-	// Router address
+	// Router address in format "host:port"
 	RouterAddress string `json:"routerAddress"`
-
-	// Router TCP port
-	RouterPort int `json:"routerPort"`
 
 	// Secret with Router username and password
 	SecretRef string `json:"secretRef"`
