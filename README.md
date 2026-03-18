@@ -57,6 +57,8 @@ kubectl create secret generic router-auth \
   --from-literal=password=my-super-safe-pass
 ```
 
+It is recommended to use a specially created user with read-only rights.
+
 **Create instances of your solution:**
 
 You can apply the samples (examples) from the config/sample:
