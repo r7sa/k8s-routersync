@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,7 +43,8 @@ type ScheduleInfo interface {
 
 type RouterSyncReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 
 	RouterPool map[PoolKey]ScheduleInfo
 }
@@ -139,7 +141,7 @@ func (r *RouterSyncReconciler) collectSchedules(
 }
 
 func (r *RouterSyncReconciler) scaleDeployments(
-	ctx context.Context, deployments *appsv1.DeploymentList, scheduleActive map[string]bool,
+	ctx context.Context, rs controlv1.RouterSync, deployments *appsv1.DeploymentList, scheduleActive map[string]bool,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -152,13 +154,19 @@ func (r *RouterSyncReconciler) scaleDeployments(
 		}
 
 		if *dep.Spec.Replicas != targetReplicas {
+			oldReplicas := *dep.Spec.Replicas
 			dep.Spec.Replicas = &targetReplicas
 			if err := r.Update(ctx, &dep); err != nil {
+				r.Recorder.Eventf(&rs, "Warning", "ScaleFailed", "Failed to scale %s to %d: %v", dep.Name, targetReplicas, err)
+
 				errs = append(errs, err)
 				log.Error(err, "Can't update deployment", "name", dep.Name)
-				continue
+			} else {
+				r.Recorder.Eventf(&rs, "Normal", "Scaled", "Deployment %s scaled from %d to %d", dep.Name, oldReplicas, targetReplicas)
+
+				log.Info("Deployment replicas set", "deployment", dep.Name, "replicas", targetReplicas)
 			}
-			log.Info("Deployment replicas set", "deployment", dep.Name, "replicas", targetReplicas)
+
 		}
 	}
 	return errors.Join(errs...)
@@ -236,7 +244,7 @@ func (r *RouterSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	err = r.scaleDeployments(ctx, deployments, scheduleActive)
+	err = r.scaleDeployments(ctx, rs, deployments, scheduleActive)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

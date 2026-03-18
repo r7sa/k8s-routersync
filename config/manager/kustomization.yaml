@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: localhost:5050/k8s-routersync
-  newTag: 6caeaeb-test3
+  newTag: e35442c
