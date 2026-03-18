@@ -9,7 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,7 +44,7 @@ type ScheduleInfo interface {
 type RouterSyncReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 
 	RouterPool map[PoolKey]ScheduleInfo
 }
@@ -157,13 +157,15 @@ func (r *RouterSyncReconciler) scaleDeployments(
 			oldReplicas := *dep.Spec.Replicas
 			dep.Spec.Replicas = &targetReplicas
 			if err := r.Update(ctx, &dep); err != nil {
-				r.Recorder.Eventf(&rs, "Warning", "ScaleFailed", "Failed to scale %s to %d: %v", dep.Name, targetReplicas, err)
-
+				r.Recorder.Eventf(
+					&rs, &dep, corev1.EventTypeWarning, "ScaleFailed", "ScalingDeployment",
+					"Failed to scale %s to %d: %v", dep.Name, targetReplicas, err)
 				errs = append(errs, err)
 				log.Error(err, "Can't update deployment", "name", dep.Name)
 			} else {
-				r.Recorder.Eventf(&rs, "Normal", "Scaled", "Deployment %s scaled from %d to %d", dep.Name, oldReplicas, targetReplicas)
-
+				r.Recorder.Eventf(
+					&rs, &dep, corev1.EventTypeNormal, "Scaled", "ScalingDeployment",
+					"Deployment %s scaled from %d to %d", dep.Name, oldReplicas, targetReplicas)
 				log.Info("Deployment replicas set", "deployment", dep.Name, "replicas", targetReplicas)
 			}
 
@@ -215,6 +217,7 @@ func (*RouterSyncReconciler) getTargetReplicas(
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *RouterSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)

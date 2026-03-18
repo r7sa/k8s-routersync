@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -201,6 +202,7 @@ var _ = Describe("RouterSync Controller", func() {
 				By("Reconciling the created resource")
 				controllerReconciler := &RouterSyncReconciler{
 					Client: k8sClient, Scheme: k8sClient.Scheme(),
+					Recorder: events.NewFakeRecorder(100),
 				}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: typeNamespacedName,
@@ -221,6 +223,14 @@ var _ = Describe("RouterSync Controller", func() {
 				Expect(deployments.Items).Should(HaveLen(1))
 				Expect(deployments.Items[0].Spec.Replicas).ToNot(BeNil())
 				Expect(*deployments.Items[0].Spec.Replicas).To(Equal(int32(expectedReplicas)))
+
+				fakeRecorder := controllerReconciler.Recorder.(*events.FakeRecorder)
+				select {
+				case event := <-fakeRecorder.Events:
+					Expect(event).To(ContainSubstring("Scaled"))
+				default:
+					Fail("No events was recorder into Recorder")
+				}
 			},
 			Entry("scheduling is active", true, 10),
 			Entry("scheduling is not active", false, 1),
